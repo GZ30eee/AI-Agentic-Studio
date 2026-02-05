@@ -1,0 +1,11 @@
+crewai
+crewai-tools
+langchain_community
+duckduckgo-search
+gradio
+chromadb
+reportlab
+pysqlite3-binary ; sys_platform == 'linux' 
+steramlit
+tenacity
+# pysqlite3 is a fix for some linux setups, safe to include.

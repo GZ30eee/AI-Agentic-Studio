@@ -1,47 +1,44 @@
-import os
+import logging
+import sqlite3
+import smtplib
+import threading
 import hashlib
 import time
 import json
-import logging
-import sqlite3
+import io
+import csv
+import re
+import os
 from datetime import datetime
-from langgraph.graph import StateGraph, END
-from typing import TypedDict, Type, List, Dict, Any, Optional
-import threading
 from queue import Queue
+from typing import TypedDict, Type, List, Dict, Any, Optional, cast
 
-import smtplib
-import logging
-# Duplicate logger removed
-
-from langgraph.graph import StateGraph
 import streamlit as st
 from streamlit_option_menu import option_menu
-import streamlit_authenticator as stauth
+from streamlit.components.v1 import html as st_html
+from xml.sax.saxutils import escape as xml_escape
+
+from langgraph.graph import StateGraph, END
+from tenacity import retry, stop_after_attempt, wait_fixed
+from dotenv import load_dotenv
 import yaml
 from yaml.loader import SafeLoader
 
-from tenacity import retry, stop_after_attempt, wait_fixed
-from dotenv import load_dotenv
-from typing import cast, TypedDict, Type, List, Dict, Any, Optional
-
-# Core Frameworks
-from crewai import Agent, Task, Crew, LLM, Process
-from crewai.tools import BaseTool
-from langchain_community.tools import DuckDuckGoSearchRun
-from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
-
-os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
-
-# PDF & Email
-from reportlab.lib.pagesizes import LETTER
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-import smtplib
+# Email & PDF Imports
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+from reportlab.lib.pagesizes import LETTER
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+
+# Framework & Tools
+from crewai import Agent, Task, Crew, LLM, Process
+from crewai.tools import BaseTool
+from langchain_community.tools import DuckDuckGoSearchRun
+from pydantic import BaseModel, Field
+
+os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
 # New imports for enhancements
 import requests
@@ -58,6 +55,8 @@ from sqlalchemy.orm import sessionmaker, declarative_base
 import openai
 import anthropic
 import google.generativeai as genai
+import PyPDF2
+from gtts import gTTS
 
 # Additional imports for new features
 import io
@@ -67,10 +66,7 @@ from gtts import gTTS
 from streamlit.components.v1 import html as st_html
 from xml.sax.saxutils import escape as xml_escape
 
-from pydantic import BaseModel, Field
-
-class SearchInput(BaseModel):
-    query: str = Field(..., description="Search query")
+# --- DATABASE SETUP (SQLite) ---
 
 # For monitoring (stub)
 from prometheus_client import Counter, Histogram, start_http_server

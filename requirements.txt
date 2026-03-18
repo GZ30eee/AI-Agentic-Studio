@@ -1,0 +1,33 @@
+crewai
+crewai-tools
+langchain_community
+duckduckgo-search
+gradio
+chromadb
+reportlab
+pysqlite3-binary ; sys_platform == 'linux'
+streamlit
+tenacity
+# New dependencies for enhanced features
+beautifulsoup4
+requests
+textstat                # Readability scores
+python-docx              # DOCX export
+python-pptx              # PowerPoint export
+markdown                 # Markdown export
+streamlit-authenticator  # User authentication
+sqlalchemy               # Database ORM
+openai                   # OpenAI models
+anthropic                # Claude models
+google-generativeai      # Gemini models
+sentence-transformers    # Local embeddings for RAG
+# Optional: for monitoring & task queue (stubs)
+prometheus-client
+celery
+redis
+streamlit-option-menu
+duckduckgo-search
+google-genai
+PyPDF2
+gTTS
+langgraph

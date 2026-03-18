@@ -1,0 +1,11 @@
+credentials:
+  usernames:
+    jsmith:
+      email: jsmith@example.com
+      name: John Smith
+      password: $2b$12$lzCDZnBJPnPnNjE9YKTM7ew2hIEy1hpQzXhZG6v6VGfRoAME6mGci
+preauthorized: {}
+cookie:
+  expiry_days: 30
+  key: some_random_key_string
+  name: some_cookie_name

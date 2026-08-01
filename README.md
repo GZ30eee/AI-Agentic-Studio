@@ -151,6 +151,11 @@ cp .env.example .env
 streamlit run app.py
 ```
 
+## 📖 Full Deployment Guide
+
+For detailed setup instructions, local development, and cloud deployment on Streamlit, see the **[Deployment Guide](DEPLOYMENT.md)**.
+
+
 ---
 
 ## 📝 License

@@ -19,7 +19,7 @@ from streamlit.components.v1 import html as st_html
 from xml.sax.saxutils import escape as xml_escape
 
 from langgraph.graph import StateGraph, END
-from tenacity import retry, stop_after_attempt, wait_fixed
+from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 from dotenv import load_dotenv
 import yaml
 from yaml.loader import SafeLoader
@@ -37,6 +37,12 @@ from crewai import Agent, Task, Crew, LLM, Process
 from crewai.tools import BaseTool
 from langchain_community.tools import DuckDuckGoSearchRun
 from pydantic import BaseModel, Field
+
+# Observability
+from langsmith import Client
+from langsmith.wrappers import wrap_openai
+from langchain.callbacks.tracers import LangChainTracer
+from langchain.callbacks import get_openai_callback
 
 os.environ["CREWAI_TELEMETRY_OPT_OUT"] = "true"
 
@@ -57,6 +63,7 @@ import anthropic
 import google.generativeai as genai
 import PyPDF2
 from gtts import gTTS
+import tiktoken
 
 # Additional imports for new features
 import io
@@ -76,6 +83,20 @@ load_dotenv()
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# --- LangSmith Setup ---
+langsmith_client = None
+if os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true":
+    try:
+        langsmith_client = Client(
+            api_key=os.getenv("LANGCHAIN_API_KEY"),
+            api_url="https://api.smith.langchain.com"
+        )
+        logger.info("LangSmith tracing enabled.")
+    except Exception as e:
+        logger.warning(f"LangSmith client initialization failed: {e}")
+
+tracer = LangChainTracer(project_name=os.getenv("LANGCHAIN_PROJECT", "agentic-studio")) if langsmith_client else None
 
 # --- MONITORING SETUP (optional) ---
 if os.getenv("ENABLE_MONITORING", "false").lower() == "true":
@@ -106,6 +127,9 @@ class ReportDB(Base):
     pdf_path = sa.Column(sa.String)
     created_at = sa.Column(sa.DateTime, default=datetime.utcnow)
     user_id = sa.Column(sa.String)
+    # Cost tracking
+    total_cost = sa.Column(sa.Float, default=0.0)
+    total_tokens = sa.Column(sa.Integer, default=0)
 
 Base.metadata.create_all(engine)
 
@@ -119,8 +143,12 @@ class DuckDuckGoTool(BaseTool):
     args_schema: Type[BaseModel] = SearchInput
 
     def _run(self, query: str) -> str:
-        search = DuckDuckGoSearchRun()
-        return search.run(query)
+        try:
+            search = DuckDuckGoSearchRun()
+            return search.run(query)
+        except Exception as e:
+            logger.error(f"DuckDuckGo error: {e}")
+            return f"Search error: {e}"
 
 class WebScraperInput(BaseModel):
     url: str = Field(..., description="URL to scrape")
@@ -132,7 +160,10 @@ class WebScraperTool(BaseTool):
 
     def _run(self, url: str) -> str:
         try:
-            response = requests.get(url, timeout=10)
+            session = requests.Session()
+            retries = requests.adapters.Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+            session.mount('https://', requests.adapters.HTTPAdapter(max_retries=retries))
+            response = session.get(url, timeout=10)
             soup = BeautifulSoup(response.text, 'html.parser')
             for script in soup(["script", "style"]):
                 script.decompose()
@@ -142,6 +173,7 @@ class WebScraperTool(BaseTool):
             text = ' '.join(chunk for chunk in chunks if chunk)
             return text[:5000]
         except Exception as e:
+            logger.error(f"Scraping error: {e}")
             return f"Scraping error: {e}"
 
 class NewsAPIInput(BaseModel):
@@ -158,13 +190,17 @@ class NewsAPITool(BaseTool):
             return "News API key not configured."
         url = f"https://newsapi.org/v2/everything?q={query}&apiKey={api_key}"
         try:
-            response = requests.get(url).json()
+            session = requests.Session()
+            retries = requests.adapters.Retry(total=3, backoff_factor=1, status_forcelist=[502, 503, 504])
+            session.mount('https://', requests.adapters.HTTPAdapter(max_retries=retries))
+            response = session.get(url, timeout=10).json()
             articles = response.get('articles', [])[:5]
             summaries = []
             for art in articles:
                 summaries.append(f"Title: {art['title']}\nDescription: {art['description']}\nURL: {art['url']}")
             return "\n\n".join(summaries)
         except Exception as e:
+            logger.error(f"News API error: {e}")
             return f"News API error: {e}"
 
 class RAGTool(BaseTool):
@@ -204,9 +240,13 @@ class RAGTool(BaseTool):
         self.collection.add(documents=texts, metadatas=metadatas, ids=ids)
 
     def _run(self, query: str) -> str:
-        results = self.collection.query(query_texts=[query], n_results=5)
-        docs = results['documents'][0]
-        return "\n\n".join(docs) if docs else "No relevant documents found."
+        try:
+            results = self.collection.query(query_texts=[query], n_results=5)
+            docs = results['documents'][0]
+            return "\n\n".join(docs) if docs else "No relevant documents found."
+        except Exception as e:
+            logger.error(f"RAG error: {e}")
+            return f"RAG error: {e}"
 
 # Instantiate tools
 search_tool = DuckDuckGoTool()
@@ -223,7 +263,7 @@ FREE_MODELS = {
     "Ollama": ["phi3:mini"]
 }
 
-# --- LLM FACTORY (unchanged) ---
+# --- LLM FACTORY ---
 class LLMFactory:
     @staticmethod
     def get_llm(provider: str, model: str, temperature: float = 0.7, max_tokens: int = 4096):
@@ -279,13 +319,15 @@ class AgentState(TypedDict):
     target_language: Optional[str]
     cache_key: str
     refinement_attempts: int
+    # Cost tracking
+    total_tokens: int
+    total_cost: float
 
 # --- CACHE ---
 CACHE = {}
-# Removed unused get_cached_or_search
 
-# --- NODES (unchanged) ---
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+# --- NODES ---
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2), retry=retry_if_exception_type(Exception))
 def planning_node(state: AgentState):
     logger.info(f"Planning: {state['topic']}")
     llm = LLMFactory.get_llm(state.get('llm_provider', 'Ollama'), state.get('llm_model', 'llama3.1'))
@@ -301,7 +343,7 @@ def planning_node(state: AgentState):
     result_obj = Crew(agents=[director], tasks=[task], timeout=120).kickoff()
     return {"plan": str(result_obj.raw), "status": "Structure Planned"}
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2), retry=retry_if_exception_type(Exception))
 def research_node(state: AgentState):
     agents = []
     tasks = []
@@ -332,7 +374,8 @@ def research_node(state: AgentState):
         agents=agents, 
         tasks=tasks, 
         process=Process.sequential,
-        verbose=True
+        verbose=True,
+        timeout=300  # overall timeout for research
     )
     
     result_obj = crew.kickoff()
@@ -345,7 +388,7 @@ def research_node(state: AgentState):
         "status": "Parallel Research Complete"
     }
 
-@retry(stop=stop_after_attempt(3), wait=wait_fixed(2))
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2), retry=retry_if_exception_type(Exception))
 def writing_node(state: AgentState):
     llm = LLMFactory.get_llm(state['llm_provider'], state['llm_model'])
     style_guide = {
@@ -386,6 +429,13 @@ Be verbose and aim for at least 1500 words. Include citations where appropriate.
 
 def quality_node(state: AgentState):
     report = state.get("final_report", "")
+    # Fallback: if report is empty, generate a minimal one
+    if not report or len(report.strip()) < 100:
+        logger.warning("Empty or very short report; using fallback.")
+        fallback_text = f"Executive Summary: Research on {state['topic']} is ongoing. Please refine the query or check external sources."
+        state["final_report"] = fallback_text
+        report = fallback_text
+
     length_score = len(report) / 800
     flesch = textstat.flesch_reading_ease(report)
     gunning_fog = textstat.gunning_fog(report)
@@ -421,16 +471,17 @@ def citation_node(state: AgentState):
     if not isinstance(citations, list):
         citations = []
     
-    if not citations:
-        citations = [] # Removed dummy data
-    
+    # If no citations, we could generate some from research notes, but we'll skip for now.
     report = str(state.get("final_report", ""))
     ref_section = "\n\n## References\n"
-    for i, cit in enumerate(citations, 1):
-        cit_dict = cast(dict, cit)
-        source = str(cit_dict.get('source', 'Unknown'))
-        snippet = str(cit_dict.get('snippet', ''))
-        ref_section += f"{i}. {source} - {snippet[:100]}...\n"
+    if citations:
+        for i, cit in enumerate(citations, 1):
+            cit_dict = cast(dict, cit)
+            source = str(cit_dict.get('source', 'Unknown'))
+            snippet = str(cit_dict.get('snippet', ''))
+            ref_section += f"{i}. {source} - {snippet[:100]}...\n"
+    else:
+        ref_section += "No specific citations were generated."
     updated_report = report + ref_section
     return {"final_report": updated_report, "citations": citations, "status": "Citations Added"}
 
@@ -485,7 +536,7 @@ workflow.add_edge("translation", END)
 
 app_graph = workflow.compile()
 
-# --- OUTPUT FORMATTING FUNCTIONS (unchanged) ---
+# --- OUTPUT FORMATTING FUNCTIONS ---
 def generate_pdf(content: str, topic: str) -> str:
     report_id = hashlib.md5(topic.lower().encode()).hexdigest()[:8]
     filename = f"DeepDive_{report_id}.pdf"
@@ -558,9 +609,17 @@ def generate_markdown(content: str, topic: str) -> str:
     return filename
 
 # --- DATABASE SAVE ---
-def save_report_to_db(topic: str, email: str, report_text: str, pdf_path: str, user_id: str):
+def save_report_to_db(topic: str, email: str, report_text: str, pdf_path: str, user_id: str, total_cost: float = 0.0, total_tokens: int = 0):
     session = SessionLocal()
-    report = ReportDB(topic=topic, email=email, report_text=report_text, pdf_path=pdf_path, user_id=user_id)
+    report = ReportDB(
+        topic=topic, 
+        email=email, 
+        report_text=report_text, 
+        pdf_path=pdf_path, 
+        user_id=user_id,
+        total_cost=total_cost,
+        total_tokens=total_tokens
+    )
     session.add(report)
     session.commit()
     session.close()
@@ -598,7 +657,6 @@ def send_email(email: str, pdf_path: str, topic: str):
         return False
 
 # --- HELPER: Extract and render Mermaid diagrams ---
-# --- HELPER: Extract and render Mermaid diagrams ---
 def render_mermaid_diagrams(text):
     import re
     pattern = r"```mermaid\n(.*?)\n```"
@@ -613,7 +671,6 @@ def render_mermaid_diagrams(text):
     # Render each diagram
     for i, block in enumerate(blocks):
         with st.expander(f"Mermaid Diagram {i+1}", expanded=True):
-            # Use a cleaner HTML approach with proper initialization
             html_code = f"""
             <div style="background-color: white; padding: 20px; border-radius: 5px;">
                 <pre class="mermaid" style="text-align: center; background-color: white;">
@@ -721,6 +778,27 @@ def update_env_file(key, value):
         f.writelines(lines)
     os.environ[key] = value
 
+# --- COST TRACKING HELPERS ---
+def estimate_tokens(text: str, model: str = "gpt-3.5-turbo") -> int:
+    try:
+        encoding = tiktoken.encoding_for_model(model)
+        return len(encoding.encode(text))
+    except:
+        # fallback: rough estimate
+        return len(text.split()) * 1.3
+
+def estimate_cost(tokens: int, provider: str, model: str) -> float:
+    # rough pricing per 1k tokens (as of 2025)
+    pricing = {
+        "OpenAI": {"gpt-3.5-turbo": 0.0015, "gpt-4o-mini": 0.00015},
+        "Anthropic": {"claude-3-haiku-20240307": 0.00025},
+        "Gemini": {"gemini-1.5-flash": 0.0001},
+        "Ollama": {"phi3:mini": 0.0}  # local free
+    }
+    provider_pricing = pricing.get(provider, {})
+    cost_per_1k = provider_pricing.get(model, 0.001)  # default
+    return (tokens / 1000) * cost_per_1k
+
 # --- STREAMLIT UI ---
 st.set_page_config(page_title="Agentic Studio - Tier 3", layout="wide")
 
@@ -740,6 +818,10 @@ if 'final_state' not in st.session_state:
     st.session_state['final_state'] = None
 if 'generated_files' not in st.session_state:
     st.session_state['generated_files'] = {}
+if 'total_cost' not in st.session_state:
+    st.session_state['total_cost'] = 0.0
+if 'total_tokens' not in st.session_state:
+    st.session_state['total_tokens'] = 0
 
 # Sidebar menu
 with st.sidebar:
@@ -853,7 +935,9 @@ if selected == "New Research":
                 "fact_check_report": "",
                 "readability_scores": {},
                 "cache_key": hashlib.md5(topic.encode()).hexdigest(),
-                "refinement_attempts": 0
+                "refinement_attempts": 0,
+                "total_tokens": 0,
+                "total_cost": 0.0
             }
             st.session_state['inputs'] = inputs
             st.session_state['generated_files'] = {} # Reset files
@@ -880,21 +964,38 @@ if selected == "New Research":
     if st.session_state['workflow_step'] == 'execute':
         st.session_state['start_time'] = time.time()
         final_state = {}
+        total_tokens_used = 0
+        total_cost_used = 0.0
         with st.status("🤖 Deep Research Agents at work...", expanded=True) as status:
             try:
-                # No interrupt used here for simplicity as we handle planning before execution
-                for output in app_graph.stream(st.session_state['inputs']):
-                    for node, data in output.items():
-                        if data is None:
-                            st.warning(f"⚠️ **{node}** returned no data. Skipping.")
-                            continue
-                        status_text = data.get('status', 'Done') if isinstance(data, dict) else 'Done'
-                        st.write(f"✅ **{node}**: {status_text}")
-                        if isinstance(data, dict):
-                            final_state.update(data)
+                # Use a callback for cost tracking if using OpenAI
+                with get_openai_callback() as cb:
+                    # Graph execution with optional LangSmith tracing
+                    config = {"callbacks": [tracer]} if tracer else {}
+                    for output in app_graph.stream(st.session_state['inputs'], config=config):
+                        for node, data in output.items():
+                            if data is None:
+                                st.warning(f"⚠️ **{node}** returned no data. Skipping.")
+                                continue
+                            status_text = data.get('status', 'Done') if isinstance(data, dict) else 'Done'
+                            st.write(f"✅ **{node}**: {status_text}")
+                            if isinstance(data, dict):
+                                final_state.update(data)
+                    # Capture OpenAI costs if used
+                    if cb.total_tokens > 0:
+                        total_tokens_used = cb.total_tokens
+                        total_cost_used = cb.total_cost
+                    else:
+                        # For non-OpenAI, estimate from texts
+                        if final_state.get('final_report'):
+                            tokens = estimate_tokens(final_state['final_report'], model=llm_model)
+                            total_tokens_used = tokens
+                            total_cost_used = estimate_cost(tokens, llm_provider, llm_model)
                 
                 duration = round(time.time() - st.session_state['start_time'], 2)
                 st.session_state['duration'] = duration
+                st.session_state['total_cost'] = total_cost_used
+                st.session_state['total_tokens'] = total_tokens_used
                 status.update(label=f"✅ Deep Dive Complete in {duration}s!", state="complete")
                 st.session_state['final_state'] = final_state
                 st.session_state['workflow_step'] = 'results'
@@ -986,7 +1087,15 @@ if selected == "New Research":
                         st.warning("Check .env credentials")
 
             if st.button("💾 Save to My Reports"):
-                save_report_to_db(topic, email, report_text, pdf_path, "guest_user")
+                save_report_to_db(
+                    topic, 
+                    email, 
+                    report_text, 
+                    pdf_path, 
+                    "guest_user",
+                    total_cost=st.session_state.get('total_cost', 0.0),
+                    total_tokens=st.session_state.get('total_tokens', 0)
+                )
                 st.success("Report saved to database!")
 
             # Audio Brief
@@ -1016,7 +1125,9 @@ if selected == "New Research":
                 "flesch_reading_ease": readability.get("flesch_reading_ease", "N/A"),
                 "gunning_fog": readability.get("gunning_fog", "N/A"),
                 "complex_sentences": readability.get("complex_sentences_count", 0),
-                "fact_check": final_state.get("fact_check_report", "Not performed")[:200] + "..."
+                "fact_check": final_state.get("fact_check_report", "Not performed")[:200] + "...",
+                "total_cost_$": round(st.session_state.get('total_cost', 0.0), 4),
+                "total_tokens": st.session_state.get('total_tokens', 0)
             })
 
 elif selected == "My Reports":
@@ -1026,6 +1137,7 @@ elif selected == "My Reports":
     for r in reports:
         with st.expander(f"{r.topic} - {r.created_at.strftime('%Y-%m-%d %H:%M')}"):
             st.markdown(r.report_text[:500] + "...")
+            st.caption(f"Cost: ${r.total_cost:.4f} | Tokens: {r.total_tokens}")
             if r.pdf_path and os.path.exists(r.pdf_path):
                 with open(r.pdf_path, "rb") as f:
                     st.download_button("Download PDF", f, file_name=r.pdf_path)
@@ -1054,6 +1166,13 @@ elif selected == "Settings":
         if st.button("Save News API Key"):
             update_env_file("NEWS_API_KEY", news_key)
             st.success("Saved!")
+            
+        langsmith_key = st.text_input("LangSmith API Key", type="password", value=os.getenv("LANGCHAIN_API_KEY", ""))
+        if st.button("Save LangSmith Key"):
+            update_env_file("LANGCHAIN_API_KEY", langsmith_key)
+            # Also enable tracing
+            update_env_file("LANGCHAIN_TRACING_V2", "true")
+            st.success("Saved! Restart app for changes.")
             
     with st.expander("Email"):
         email_user = st.text_input("Email User", value=os.getenv("EMAIL_USER", ""))

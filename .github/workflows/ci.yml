@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install flake8 black pytest pytest-cov
+
+    - name: Lint with flake8
+      run: flake8 . --max-line-length=120 --exclude=venv,__pycache__,docs,.git
+
+    - name: Check formatting with black
+      run: black --check .
+
+    - name: Run tests with coverage
+      run: pytest --cov=.
+      env:
+        # Mock API keys for CI (tests will use mocks)
+        OPENAI_API_KEY: "sk-dummy"
+        ANTHROPIC_API_KEY: "sk-dummy"
+        GOOGLE_API_KEY: "dummy"
+        NEWS_API_KEY: "dummy"
+        OLLAMA_URL: "http://localhost:11434"
+        LANGCHAIN_API_KEY: "dummy"

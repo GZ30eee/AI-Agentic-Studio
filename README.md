@@ -1,5 +1,4 @@
 <p align="center">
-  <img src="assets/logo.png" alt="AI Agentic Studio Logo" width="200"/>
   <h1 align="center">AI Agentic Studio</h1>
   <p align="center">
     <strong>Production‑ready multi‑agent research & reporting framework</strong>

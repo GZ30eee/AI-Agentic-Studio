@@ -1,6 +1,17 @@
-# 🚀 Deployment Guide
+<p align="center">
+  <h1 align="center">🚀 Deployment Guide</h1>
+  <p align="center">
+    <strong>Run locally or host on Streamlit Cloud in minutes</strong>
+    <br />
+    <a href="#-local-setup"><strong>Local Setup</strong></a>
+    ·
+    <a href="#-hosting-on-streamlit-cloud"><strong>Cloud Deployment</strong></a>
+    ·
+    <a href="#-troubleshooting-common-issues"><strong>Troubleshooting</strong></a>
+  </p>
+</p>
 
-## How to Run the App Locally & Host on Streamlit Cloud
+---
 
 ## 📦 Local Setup
 
@@ -13,17 +24,10 @@ cd AI-Agentic-Studio
 
 ### 2. Create & Activate Virtual Environment
 
-**Linux/macOS:**
-```bash
-python -m venv venv
-source venv/bin/activate
-```
-
-**Windows:**
-```bash
-python -m venv venv
-venv\Scripts\activate
-```
+| OS | Command |
+|----|---------|
+| **Linux/macOS** | `python -m venv venv` <br> `source venv/bin/activate` |
+| **Windows** | `python -m venv venv` <br> `venv\Scripts\activate` |
 
 ### 3. Install Dependencies
 
@@ -35,11 +39,8 @@ pip install -r requirements.txt
 ### 4. Set Up Environment Variables
 
 ```bash
-# Copy the example .env file
 cp .env.example .env
-
-# Edit .env with your API keys
-nano .env  # or use any text editor
+# Edit .env with your API keys (nano .env, or use your favorite editor)
 ```
 
 **Minimum required for different providers:**
@@ -88,7 +89,7 @@ ollama serve
 streamlit run app.py
 ```
 
-The app will open at `http://localhost:8501`
+The app will open at `http://localhost:8501` 🎉
 
 ---
 
@@ -110,8 +111,8 @@ python -c "import os; print('OpenAI:', bool(os.getenv('OPENAI_API_KEY')))"
 
 ### Prerequisites
 
-1. GitHub repository with your code
-2. Streamlit Cloud account (free with GitHub)
+- ✅ GitHub repository with your code
+- ✅ Streamlit Cloud account (free with GitHub)
 
 ### Step 1: Push Code to GitHub
 
@@ -123,10 +124,10 @@ git push origin main
 
 ### Step 2: Deploy on Streamlit Cloud
 
-1. **Go to** [share.streamlit.io](https://share.streamlit.io)
-2. **Sign in** with your GitHub account
+1. Go to [share.streamlit.io](https://share.streamlit.io)
+2. Sign in with your GitHub account
 3. Click **"New app"**
-4. **Fill in the deployment form:**
+4. Fill in the deployment form:
    - **Repository:** `GZ30eee/AI-Agentic-Studio`
    - **Branch:** `main`
    - **Main file path:** `app.py`
@@ -134,7 +135,7 @@ git push origin main
 
 ### Step 3: Configure Secrets (Environment Variables)
 
-**IMPORTANT:** You cannot use a `.env` file on Streamlit Cloud. You must use **Secrets**.
+> ⚠️ **IMPORTANT:** You cannot use a `.env` file on Streamlit Cloud – use **Secrets** instead.
 
 1. In your app dashboard, go to **Settings** → **Secrets**
 2. Add the following as TOML:
@@ -200,27 +201,15 @@ Click **"Reboot"** or push a new commit to trigger a rebuild.
 
 ## 🎯 Troubleshooting Common Issues
 
-### Issue 1: Missing API Keys
+| Issue | Symptom | Fix |
+|-------|---------|-----|
+| **Missing API Keys** | `OpenAI API key is missing` | Add key to `.env` (local) or `st.secrets` (cloud) |
+| **Ollama Not Reachable (Cloud)** | `OLLAMA_URL=http://localhost:11434` fails | Use OpenAI/Anthropic/Gemini instead, or host Ollama on a public server (not recommended) |
+| **ChromaDB Persistence** | ChromaDB tries to write to filesystem (limited on Streamlit Cloud) | Code falls back to `EphemeralClient()` automatically – see snippet below |
+| **Large Dependencies** | Deployment timeout during installation | Use `streamlit` minimal image; split dependencies if needed |
+| **Port Already in Use (Local)** | `Address already in use` | `lsof -ti:8501 \| xargs kill -9` (macOS/Linux) or `netstat -ano \| findstr :8501` (Windows) |
 
-**Error:** `OpenAI API key is missing`
-
-**Fix:** Add the key to `.env` (local) or `st.secrets` (cloud)
-
-### Issue 2: Ollama Not Reachable (Cloud)
-
-**Problem:** `OLLAMA_URL=http://localhost:11434` won't work on Streamlit Cloud
-
-**Solutions:**
-- Use OpenAI/Anthropic/Gemini instead
-- Host Ollama on a public server (not recommended for production)
-- Use Hugging Face models via `llama-cpp-python` (requires code change)
-
-### Issue 3: ChromaDB Persistence
-
-**Problem:** ChromaDB tries to write to filesystem, which is limited on Streamlit Cloud
-
-**Solution:** The code already falls back to `EphemeralClient()` if persistent fails:
-
+**ChromaDB fallback snippet (already in code):**
 ```python
 try:
     client = chromadb.PersistentClient(path="./chroma_db")
@@ -228,41 +217,18 @@ except:
     client = chromadb.EphemeralClient()  # Falls back automatically
 ```
 
-### Issue 4: Large Dependencies
-
-**Problem:** Deployment fails because of timeout during installation
-
-**Solution:**
-- Use `streamlit` minimal image (it's lightweight)
-- Split dependencies into `requirements.txt` and `packages.txt` if needed
-
-### Issue 5: Port Already in Use (Local)
-
-**Error:** `Address already in use`
-
-**Fix:**
-```bash
-# Kill process on port 8501
-lsof -ti:8501 | xargs kill -9  # macOS/Linux
-netstat -ano | findstr :8501   # Windows, then kill PID
-```
-
 ---
 
 ## 📊 Cost Optimization Tips
 
-### For Local Development
-- Use **Ollama** (free, local) for most testing
-- Switch to OpenAI only for final reports
-
-### For Production/Cloud
-- Use **OpenAI gpt-4o-mini** (cheap: ~$0.15 per 1M tokens)
-- Cache common responses
-- Set `max_rpm=50` to avoid throttling
+| Scenario | Recommendation |
+|----------|----------------|
+| **Local Development** | Use **Ollama** (free, local) for most testing; switch to OpenAI only for final reports |
+| **Production/Cloud** | Use **OpenAI gpt-4o-mini** (cheap: ~$0.15 per 1M tokens); cache common responses; set `max_rpm=50` to avoid throttling |
 
 ---
 
-## 🚀 Quick Deployment Checklist
+## ✅ Quick Deployment Checklist
 
 - [ ] Code pushed to GitHub
 - [ ] `requirements.txt` up to date
@@ -292,4 +258,11 @@ Local URL: http://localhost:8501
 Network URL: http://192.168.x.x:8501
 ```
 
-The app will be accessible at your Streamlit Cloud URL: `https://ai-agentic-studio-username.streamlit.app`
+The app will be accessible at your Streamlit Cloud URL:  
+**`https://ai-agentic-studio-username.streamlit.app`**
+
+---
+
+<p align="center">
+  Made with ❤️ by <a href="https://github.com/GZ30eee">GZ30eee</a>
+</p>
